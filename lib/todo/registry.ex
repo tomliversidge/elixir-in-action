@@ -12,7 +12,10 @@ defmodule Todo.ProcessRegistry do
   end
 
   def whereis_name(key) do
-      GenServer.call(:process_registry, {:whereis_name, key})
+    case :ets.lookup(:ets_process_registry, key) do
+      [{^key, value}] -> value
+      _ -> :undefined
+    end
   end
 
   def unregister_name(key) do
@@ -29,44 +32,28 @@ defmodule Todo.ProcessRegistry do
   end
 
   def init(_) do
-    {:ok, HashDict.new}
+    :ets.new(:ets_process_registry, [:set, :named_table, :protected])
+    {:ok, nil}
   end
 
-  def handle_call({:register_name, key, pid}, _sender, process_registry) do
-      case HashDict.get(process_registry, key) do
-        nil ->
-          Process.monitor(pid)
-          {:reply, :yes, HashDict.put(process_registry, key, pid)}
-        _ ->
-          {:reply, :no, process_registry}
+  def handle_call({:register_name, key, pid}, _sender, state) do
+    case whereis_name(key) do
+      :undefined ->
+        Process.monitor(pid)
+        :ets.insert(:ets_process_registry, {key, pid})
+        {:reply, :yes, state}
+
+      _ -> {:reply, :no, state}
       end
   end
 
-  def handle_call({:whereis_name, key}, _sender, process_registry) do
-    {
-      :reply,
-      HashDict.get(process_registry, key, :undefined),
-      process_registry
-    }
+  def handle_call({:unregister_name, key}, _, state) do
+    :ets.delete(:ets_process_registry, key)
+    {:reply, key, state}
   end
 
-  def handle_call({:unregister_name, key}, _, process_registry) do
-      {:reply, key, HashDict.delete(process_registry, key)}
-  end
-
-  def handle_info({:DOWN, _, :process, pid, _}, process_registry) do
-    {:noreply, deregister_pid(process_registry, pid)}
-  end
-
-  defp deregister_pid(process_registry, pid) do
-    Enum.reduce(
-    process_registry,
-    process_registry,
-    fn
-      ({key, registered_pid}, acc) when registered_pid == pid ->
-        HashDict.delete(acc, key)
-      (_, acc) -> acc
-    end
-    )
+  def handle_info({:DOWN, _, :process, pid, _}, state) do
+    :ets.match_delete(:ets_process_registry, {:_, pid})
+    {:noreply, state}
   end
 end
